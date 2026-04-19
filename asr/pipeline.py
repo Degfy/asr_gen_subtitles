@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from asr.engine import asr_align, result_to_dict, ASRResult, ASR_MODELS, ALIGNER_MODELS
+from asr.engine import asr_align, align_only, result_to_dict, ASRResult, ASR_MODELS, ALIGNER_MODELS
 from asr.subtitle import SubtitleLine, ASSSubtitleStyle, render_srt_from_lines, render_ass_from_lines
 from asr.text_utils import (
     SENTENCE_END, COMMA_LIKE, TRAILING_STRIP,
@@ -38,6 +38,27 @@ def stage1_asr(audio_path: str, output_dir: str, language: Optional[str] = None,
     """
     print("[Stage 1] ASR + Forced Alignment...")
     result = asr_align(audio_path, language=language, model_size=model_size)
+    result_dict = result_to_dict(result)
+    result_dict["source"] = os.path.basename(audio_path)
+
+    raw_path = os.path.join(output_dir, _raw_json_name(audio_path))
+    os.makedirs(output_dir, exist_ok=True)
+    with open(raw_path, "w", encoding="utf-8") as f:
+        json.dump(result_dict, f, ensure_ascii=False, indent=2)
+    print(f"  Saved: {raw_path} ({len(result_dict.get('words', []))} words)")
+    return result_dict
+
+
+def stage1_align(audio_path: str, output_dir: str, align_text: str,
+                 language: Optional[str] = None) -> dict:
+    """Stage 1 (alignment-only): User provides text, we only timestamp it.
+
+    Skips ASR transcription. Uses ForcedAligner directly on provided text.
+
+    Returns dict with 'text', 'language', 'duration', 'words' (flat list).
+    """
+    print("[Stage 1] Alignment-only (text provided by user)...")
+    result = align_only(audio_path, text=align_text, language=language)
     result_dict = result_to_dict(result)
     result_dict["source"] = os.path.basename(audio_path)
 
@@ -625,6 +646,7 @@ def run_pipeline(
     model_size: Optional[str] = None,
     max_chars: int = 14,
     resume_from: Optional[str] = None,
+    align_text: Optional[str] = None,
 ) -> dict:
     """Run the full ASR subtitle generation pipeline."""
     # Apply defaults
@@ -653,7 +675,10 @@ def run_pipeline(
 
     # Stage 1: ASR + Align
     if start_idx <= 0:
-        result_dict = stage1_asr(audio_path, output_dir, language, model_size)
+        if align_text:
+            result_dict = stage1_align(audio_path, output_dir, align_text, language)
+        else:
+            result_dict = stage1_asr(audio_path, output_dir, language, model_size)
     else:
         raw_path = os.path.join(output_dir, _raw_json_name(audio_path))
         print(f"[Stage 1] Skipping, loading: {raw_path}")

@@ -427,6 +427,188 @@ def _asr_align_mlx(asr_model, aligner_model, audio_path: str, wav, sr: int, dura
     )
 
 
+# ── Alignment-only (text provided by user) ───────────────────────
+
+def align_only(audio_path: str, text: str, language: Optional[str] = None) -> ASRResult:
+    """Alignment-only mode: user provides text, we only timestamp it.
+
+    Skips ASR transcription step. Uses ForcedAligner directly.
+
+    Args:
+        audio_path: Path to audio file
+        text: Pre-transcribed text (already known/corrected)
+        language: Language hint (e.g., "Chinese", "English")
+
+    Returns:
+        ASRResult with word-level timestamps derived from provided text
+    """
+    backend = get_backend()
+
+    # Load audio to get duration
+    wav, sr = load_audio(audio_path)
+    duration = len(wav) / sr
+    print(f"Audio duration: {duration:.2f}s")
+    print(f"Provided text ({len(text)} chars): {text[:100]}...")
+
+    if backend == "mlx":
+        return _align_only_mlx(audio_path, text, wav, sr, duration, language)
+    else:
+        # CUDA: try alignment-only via the ForcedAligner directly
+        try:
+            return _align_only_cuda(audio_path, text, wav, sr, duration, language)
+        except Exception as e:
+            print(f"CUDA alignment-only failed ({e}), falling back to ASR+align")
+            # Fallback: run ASR+align but use provided text
+            result = asr_align(audio_path, language=language, model_size="0.6B")
+            # Override text with provided text, re-run punctuation restoration
+            result.text = text
+            result.words = _restore_punctuation(result.words, text)
+            return result
+
+
+def _align_only_cuda(audio_path: str, text: str, wav, sr: int, duration: float, language: Optional[str]) -> ASRResult:
+    """Alignment-only using CUDA/PyTorch backend."""
+    from qwen_asr import Qwen3ForcedAligner
+
+    aligner_path = resolve_model_path(ALIGNER_MODELS["cuda"])
+    print(f"Loading ForcedAligner ({ALIGNER_MODELS['cuda']}) on cuda...")
+    aligner = Qwen3ForcedAligner.from_pretrained(
+        aligner_path,
+        dtype=torch.bfloat16,
+        device_map="cuda:0",
+    )
+
+    lang_code = _language_to_code(language) or "Chinese"
+
+    # For long audio (> 5 min), split into 30s chunks
+    if duration > 300:
+        print("Splitting audio into 30s chunks...")
+        chunk_duration = 30.0
+        segment_samples = int(chunk_duration * sr)
+
+        all_words = []
+        for i, start in enumerate(range(0, len(wav), segment_samples)):
+            end = min(start + segment_samples, len(wav))
+            offset = start / sr
+
+            print(f"  Aligning chunk {i+1}...")
+            # Extract text for this chunk (proportional slice)
+            chunk_text = _extract_chunk_text(text, start, end, len(wav))
+            if not chunk_text:
+                continue
+
+            result = aligner.align(
+                audio=(wav[start:end], sr),
+                text=chunk_text,
+                language=lang_code,
+            )
+
+            for ts in result:
+                all_words.append(WordTimestamp(
+                    text=ts.text,
+                    start_time=ts.start_time + offset,
+                    end_time=ts.end_time + offset,
+                ))
+
+        full_text = "".join(w.text for w in all_words)
+        return ASRResult(
+            language=lang_code,
+            text=full_text,
+            duration=duration,
+            words=all_words,
+        )
+    else:
+        # Short audio
+        print("Aligning audio with provided text...")
+        result = aligner.align(
+            audio=audio_path,
+            text=text,
+            language=lang_code,
+        )
+
+        words = []
+        for ts in result:
+            words.append(WordTimestamp(
+                text=ts.text,
+                start_time=ts.start_time,
+                end_time=ts.end_time,
+            ))
+
+        words = _restore_punctuation(words, text)
+
+        return ASRResult(
+            language=lang_code,
+            text=text,
+            duration=duration,
+            words=words,
+        )
+
+
+def _align_only_mlx(audio_path: str, text: str, wav, sr: int, duration: float, language: Optional[str]) -> ASRResult:
+    """Alignment-only using MLX backend (Apple Silicon)."""
+    backend = get_backend()
+    models = ASR_MODELS.get(backend, ASR_MODELS["cuda"])
+    asr_model_id = models["0.6B"]  # use smaller model for alignment
+    models_dict = get_asr_model(asr_model_id, with_aligner=True)
+    aligner = models_dict.get("aligner")
+    if not aligner:
+        raise RuntimeError("MLX aligner not loaded.")
+
+    lang_code = _language_to_code(language) or "Chinese"
+
+    print(f"Aligning with provided text (language={lang_code})...")
+    align_result = aligner.generate(
+        audio=audio_path,
+        text=text,
+        language=lang_code,
+    )
+
+    words = []
+    for item in align_result:
+        words.append(WordTimestamp(
+            text=item.text,
+            start_time=item.start_time,
+            end_time=item.end_time,
+        ))
+
+    words = _restore_punctuation(words, text)
+
+    return ASRResult(
+        language=lang_code,
+        text=text,
+        duration=duration,
+        words=words,
+    )
+
+
+def _extract_chunk_text(text: str, start_sample: int, end_sample: int, total_samples: int) -> str:
+    """Extract proportional text slice for a chunk (proportional to audio position)."""
+    if not text or total_samples == 0:
+        return ""
+
+    start_ratio = start_sample / total_samples
+    end_ratio = end_sample / total_samples
+
+    start_char = int(len(text) * start_ratio)
+    end_char = int(len(text) * end_ratio)
+
+    # Clamp
+    start_char = max(0, min(start_char, len(text)))
+    end_char = max(0, min(end_char, len(text)))
+
+    # Find word boundary near start
+    while start_char > 0 and text[start_char] not in (' ', '\n'):
+        start_char -= 1
+    if start_char > 0:
+        start_char += 1  # skip the space
+
+    # Find word boundary near end
+    while end_char < len(text) and text[end_char] not in (' ', '\n'):
+        end_char += 1
+
+    return text[start_char:end_char].strip()
+
+
 # ── Language helpers ────────────────────────────────────────────
 
 def _language_to_code(language: Optional[str]) -> Optional[str]:

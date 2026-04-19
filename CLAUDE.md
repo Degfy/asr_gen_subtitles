@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```
 Stage 1: ASR + Forced Alignment → flat word-level JSON
+         (or Alignment-only: user provides text, skips ASR)
 Stage 2: Sentence Breaking      → paragraphs (。！？), then lines (max_chars)
 Stage 3: CSV Fix                → apply multiple fix CSVs for text correction
 Stage 4: Render                  → SRT and ASS output with style selection
@@ -86,6 +87,7 @@ result = run_pipeline('audio.wav', output_dir='./subs')
 | GET | `/health` | Health check with backend info |
 | POST | `/transcribe` | Full pipeline (audio → SRT/ASS) |
 | POST | `/transcribe/text` | Text-only transcription |
+| POST | `/align` | Alignment-only (audio + text → SRT/ASS), skips ASR recognition |
 | GET | `/download/{task_id}/{fmt}` | Download generated subtitles |
 
 ## Key Implementation Notes

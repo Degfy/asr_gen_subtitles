@@ -33,8 +33,25 @@ class TranscribeRequest(BaseModel):
     fix_dir: Optional[str] = None
 
 
+class AlignRequest(BaseModel):
+    """Request for alignment-only mode (text provided by user)."""
+    text: str
+    language: Optional[str] = None
+    max_chars: int = 14
+    fmt: str = "srt"
+    ass_style: str = "default"
+
+
 class TranscribeResponse(BaseModel):
     """Response with paths to generated subtitle files."""
+    task_id: str
+    srt_path: Optional[str] = None
+    ass_path: Optional[str] = None
+    status: str = "completed"
+
+
+class AlignResponse(BaseModel):
+    """Response for alignment-only mode."""
     task_id: str
     srt_path: Optional[str] = None
     ass_path: Optional[str] = None
@@ -230,6 +247,81 @@ async def transcribe_text(
     finally:
         semaphore.release()
         # Cleanup temp audio file
+        if os.path.exists(audio_path):
+            os.unlink(audio_path)
+
+
+@app.post("/align", response_model=AlignResponse)
+async def align(
+    audio: UploadFile = File(...),
+    text: str = File(...),
+    language: Optional[str] = None,
+    max_chars: int = 14,
+    fmt: str = "srt",
+    ass_style: str = "default",
+):
+    """Alignment-only mode: audio + pre-transcribed text → subtitles.
+
+    User provides both audio and the correct transcript.
+    Skips ASR recognition, only does forced alignment with provided text.
+    """
+    if fmt not in ("srt", "ass", "all"):
+        raise HTTPException(400, f"Invalid format: {fmt}. Must be srt, ass, or all")
+
+    if not text or not text.strip():
+        raise HTTPException(400, "text cannot be empty")
+
+    # Acquire queue slot
+    semaphore = _get_queue_semaphore()
+    if semaphore.locked():
+        raise HTTPException(
+            503,
+            f"Queue is full. Maximum concurrent tasks: {get_queue_size()}. Please try again later.",
+        )
+    await semaphore.acquire()
+
+    # Save uploaded audio
+    task_id = str(uuid.uuid4())
+    filename = Path(audio.filename).name
+    allowed = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".wma", ".aac"}
+    suffix = Path(filename).suffix.lower() if "." in filename else ""
+    if suffix not in allowed:
+        suffix = ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        content = await audio.read()
+        tmp.write(content)
+        audio_path = tmp.name
+
+    output_dir = tempfile.mkdtemp(prefix=f"asr_{task_id}_")
+
+    try:
+        result = run_pipeline(
+            audio_path=audio_path,
+            output_dir=output_dir,
+            fmt=fmt,
+            ass_style=ass_style,
+            language=language,
+            max_chars=max_chars,
+            align_text=text.strip(),
+        )
+
+        if isinstance(result, dict) and "check_errors" in result:
+            raise HTTPException(422, f"Check errors: {result['check_errors']}")
+
+        srt_path = result.get("srt")
+        ass_path = result.get("ass")
+
+        return AlignResponse(
+            task_id=task_id,
+            srt_path=srt_path,
+            ass_path=ass_path,
+            status="completed",
+        )
+
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    finally:
+        semaphore.release()
         if os.path.exists(audio_path):
             os.unlink(audio_path)
 

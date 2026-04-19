@@ -61,6 +61,70 @@
             color: #7c7cff;
             font-weight: bold;
         }
+        .mode-selector {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        .mode-btn {
+            flex: 1;
+            padding: 0.8rem 1rem;
+            background: #2a2a4a;
+            border: 2px solid #4a4a6a;
+            border-radius: 8px;
+            color: #aaa;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+        .mode-btn:hover {
+            border-color: #7c7cff;
+        }
+        .mode-btn.active {
+            background: rgba(124, 124, 255, 0.2);
+            border-color: #7c7cff;
+            color: #fff;
+        }
+        .mode-btn .mode-title {
+            font-weight: bold;
+            margin-bottom: 0.2rem;
+        }
+        .mode-btn .mode-desc {
+            font-size: 0.75rem;
+            color: #888;
+        }
+        .mode-btn.active .mode-desc {
+            color: #aaa;
+        }
+        .text-input-area {
+            display: none;
+            margin-bottom: 1.5rem;
+        }
+        .text-input-area.active {
+            display: block;
+        }
+        .text-input-area textarea {
+            width: 100%;
+            min-height: 120px;
+            background: #2a2a4a;
+            border: 1px solid #4a4a6a;
+            border-radius: 8px;
+            padding: 1rem;
+            color: #fff;
+            font-size: 1rem;
+            resize: vertical;
+            font-family: inherit;
+        }
+        .text-input-area textarea:focus {
+            outline: none;
+            border-color: #7c7cff;
+        }
+        .text-input-area .input-hint {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 0.5rem;
+        }
         .controls {
             display: flex;
             gap: 1rem;
@@ -212,6 +276,22 @@
             <input type="file" id="audioFile" accept="audio/*">
         </div>
 
+        <div class="mode-selector">
+            <div class="mode-btn active" id="modeAsr" onclick="setMode('asr')">
+                <div class="mode-title">ASR 识别</div>
+                <div class="mode-desc">上传音频，自动识别文字</div>
+            </div>
+            <div class="mode-btn" id="modeAlign" onclick="setMode('align')">
+                <div class="mode-title">文本对齐</div>
+                <div class="mode-desc">提供音频和文字，只做对齐</div>
+            </div>
+        </div>
+
+        <div class="text-input-area" id="textInputArea">
+            <textarea id="transcriptText" placeholder="在此粘贴音频对应的文稿内容..."></textarea>
+            <div class="input-hint">请输入准确的文稿内容，系统将自动对齐时间轴</div>
+        </div>
+
         <div class="controls">
             <div class="control-group">
                 <label for="maxChars">每行最大字符</label>
@@ -265,10 +345,41 @@
         const progressFill = document.getElementById('progressFill');
         const currentTimeEl = document.getElementById('currentTime');
         const durationEl = document.getElementById('duration');
+        const transcriptText = document.getElementById('transcriptText');
+        const textInputArea = document.getElementById('textInputArea');
+        const modeAsr = document.getElementById('modeAsr');
+        const modeAlign = document.getElementById('modeAlign');
 
         let currentTaskId = null;
         let karaokeData = null;
         let audioUrl = null;
+        let currentMode = 'asr';
+
+        function setMode(mode) {
+            currentMode = mode;
+            if (mode === 'asr') {
+                modeAsr.classList.add('active');
+                modeAlign.classList.remove('active');
+                textInputArea.classList.remove('active');
+                transcribeBtn.textContent = '开始转换';
+            } else {
+                modeAsr.classList.remove('active');
+                modeAlign.classList.add('active');
+                textInputArea.classList.add('active');
+                transcribeBtn.textContent = '开始对齐';
+            }
+            updateTranscribeBtn();
+        }
+
+        function updateTranscribeBtn() {
+            const hasAudio = audioFileInput.files.length > 0;
+            if (currentMode === 'align') {
+                const hasText = transcriptText.value.trim().length > 0;
+                transcribeBtn.disabled = !(hasAudio && hasText);
+            } else {
+                transcribeBtn.disabled = !hasAudio;
+            }
+        }
 
         // Upload area click
         uploadArea.addEventListener('click', () => audioFileInput.click());
@@ -296,9 +407,10 @@
             }
         });
 
+        transcriptText.addEventListener('input', updateTranscribeBtn);
+
         function handleFileSelect(file) {
             fileNameDisplay.textContent = file.name;
-            transcribeBtn.disabled = false;
             statusEl.textContent = '';
             statusEl.className = 'status';
             playerSection.classList.remove('active');
@@ -307,6 +419,7 @@
                 URL.revokeObjectURL(audioUrl);
                 audioUrl = null;
             }
+            updateTranscribeBtn();
         }
 
         transcribeBtn.addEventListener('click', async () => {
@@ -318,7 +431,7 @@
             const assStyle = document.getElementById('assStyle').value;
 
             transcribeBtn.disabled = true;
-            statusEl.innerHTML = '<span class="spinner"></span>正在上传并转换...';
+            statusEl.innerHTML = '<span class="spinner"></span>正在上传并处理...';
             statusEl.className = 'status';
 
             const formData = new FormData();
@@ -327,8 +440,20 @@
             formData.append('fmt', fmt);
             formData.append('ass_style', assStyle);
 
+            if (currentMode === 'align') {
+                const text = transcriptText.value.trim();
+                if (!text) {
+                    statusEl.textContent = '请输入文稿内容';
+                    statusEl.className = 'status error';
+                    transcribeBtn.disabled = false;
+                    return;
+                }
+                formData.append('text', text);
+            }
+
             try {
-                const response = await fetch('/transcribe', {
+                const endpoint = currentMode === 'align' ? '/align' : '/transcribe';
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     body: formData,
                 });
@@ -336,7 +461,7 @@
                 const result = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(result.detail || '转换失败');
+                    throw new Error(result.detail || '处理失败');
                 }
 
                 currentTaskId = result.task_id;
@@ -358,7 +483,7 @@
                 buildKaraokeDisplay();
 
                 playerSection.classList.add('active');
-                statusEl.textContent = '转换完成！';
+                statusEl.textContent = currentMode === 'align' ? '对齐完成！' : '转换完成！';
 
                 audioPlayer.addEventListener('loadedmetadata', () => {
                     durationEl.textContent = formatTime(audioPlayer.duration);
@@ -368,7 +493,7 @@
                 statusEl.textContent = '错误: ' + err.message;
                 statusEl.className = 'status error';
             } finally {
-                transcribeBtn.disabled = false;
+                updateTranscribeBtn();
             }
         });
 
