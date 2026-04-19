@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASR Karaoke 字幕生成</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 1.5rem;
+            color: #fff;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+        }
+        .upload-area {
+            border: 2px dashed #4a4a6a;
+            border-radius: 12px;
+            padding: 3rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 1.5rem;
+        }
+        .upload-area:hover {
+            border-color: #7c7cff;
+            background: rgba(124, 124, 255, 0.1);
+        }
+        .upload-area.dragover {
+            border-color: #7c7cff;
+            background: rgba(124, 124, 255, 0.2);
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+        .upload-text {
+            color: #aaa;
+            margin-bottom: 0.5rem;
+        }
+        .file-name {
+            color: #7c7cff;
+            font-weight: bold;
+        }
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+        }
+        label {
+            font-size: 0.85rem;
+            color: #aaa;
+        }
+        input[type="number"] {
+            background: #2a2a4a;
+            border: 1px solid #4a4a6a;
+            border-radius: 6px;
+            padding: 0.5rem 0.8rem;
+            color: #fff;
+            width: 100px;
+        }
+        select {
+            background: #2a2a4a;
+            border: 1px solid #4a4a6a;
+            border-radius: 6px;
+            padding: 0.5rem 0.8rem;
+            color: #fff;
+        }
+        button {
+            background: #7c7cff;
+            border: none;
+            border-radius: 8px;
+            padding: 0.7rem 1.5rem;
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:hover:not(:disabled) {
+            background: #6a6aff;
+        }
+        button:disabled {
+            background: #4a4a6a;
+            cursor: not-allowed;
+        }
+        .player-section {
+            display: none;
+            background: #16213e;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .player-section.active {
+            display: block;
+        }
+        .audio-player {
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+        audio {
+            width: 100%;
+            height: 40px;
+        }
+        .karaoke-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            padding: 1.5rem;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .karaoke-line {
+            font-size: 1.8rem;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+            line-height: 1.6;
+            text-align: center;
+        }
+        .karaoke-line .word {
+            display: inline-block;
+            transition: color 0.1s, transform 0.1s;
+            color: #888;
+        }
+        .karaoke-line .word.active {
+            color: #ffd700;
+            transform: scale(1.1);
+        }
+        .karaoke-line .word.done {
+            color: #fff;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #2a2a4a;
+            border-radius: 2px;
+            margin-top: 1rem;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #7c7cff;
+            width: 0%;
+            transition: width 0.1s;
+        }
+        .status {
+            text-align: center;
+            padding: 1rem;
+            color: #aaa;
+        }
+        .status.error {
+            color: #ff6b6b;
+        }
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #4a4a6a;
+            border-top-color: #7c7cff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85rem;
+            color: #888;
+            margin-top: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ASR Karaoke 字幕生成</h1>
+
+        <div class="upload-area" id="uploadArea">
+            <div class="upload-icon">🎵</div>
+            <div class="upload-text">点击或拖拽上传音频文件</div>
+            <div class="upload-text" style="font-size: 0.8rem;">支持 WAV, MP3, FLAC, M4A, OGG 格式</div>
+            <div class="file-name" id="fileName"></div>
+            <input type="file" id="audioFile" accept="audio/*">
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="maxChars">每行最大字符</label>
+                <input type="number" id="maxChars" value="14" min="5" max="30">
+            </div>
+            <div class="control-group">
+                <label for="fmt">字幕格式</label>
+                <select id="fmt">
+                    <option value="srt">SRT</option>
+                    <option value="ass">ASS</option>
+                    <option value="all">全部</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="assStyle">字幕样式</label>
+                <select id="assStyle">
+                    <option value="default">默认</option>
+                </select>
+            </div>
+            <div style="display: flex; align-items: flex-end;">
+                <button id="transcribeBtn" disabled>开始转换</button>
+            </div>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="player-section" id="playerSection">
+            <div class="karaoke-container">
+                <div class="karaoke-line" id="karaokeLine"></div>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="time-display">
+                <span id="currentTime">0:00</span>
+                <span id="duration">0:00</span>
+            </div>
+            <audio id="audioPlayer" controls></audio>
+        </div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const audioFileInput = document.getElementById('audioFile');
+        const fileNameDisplay = document.getElementById('fileName');
+        const transcribeBtn = document.getElementById('transcribeBtn');
+        const statusEl = document.getElementById('status');
+        const playerSection = document.getElementById('playerSection');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const karaokeLine = document.getElementById('karaokeLine');
+        const progressFill = document.getElementById('progressFill');
+        const currentTimeEl = document.getElementById('currentTime');
+        const durationEl = document.getElementById('duration');
+
+        let currentTaskId = null;
+        let karaokeData = null;
+        let audioUrl = null;
+
+        // Upload area click
+        uploadArea.addEventListener('click', () => audioFileInput.click());
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                audioFileInput.files = e.dataTransfer.files;
+                handleFileSelect(e.dataTransfer.files[0]);
+            }
+        });
+
+        audioFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+
+        function handleFileSelect(file) {
+            fileNameDisplay.textContent = file.name;
+            transcribeBtn.disabled = false;
+            statusEl.textContent = '';
+            statusEl.className = 'status';
+            playerSection.classList.remove('active');
+            karaokeData = null;
+            if (audioUrl) {
+                URL.revokeObjectURL(audioUrl);
+                audioUrl = null;
+            }
+        }
+
+        transcribeBtn.addEventListener('click', async () => {
+            if (!audioFileInput.files.length) return;
+
+            const file = audioFileInput.files[0];
+            const maxChars = document.getElementById('maxChars').value;
+            const fmt = document.getElementById('fmt').value;
+            const assStyle = document.getElementById('assStyle').value;
+
+            transcribeBtn.disabled = true;
+            statusEl.innerHTML = '<span class="spinner"></span>正在上传并转换...';
+            statusEl.className = 'status';
+
+            const formData = new FormData();
+            formData.append('audio', file);
+            formData.append('max_chars', maxChars);
+            formData.append('fmt', fmt);
+            formData.append('ass_style', assStyle);
+
+            try {
+                const response = await fetch('/transcribe', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.detail || '转换失败');
+                }
+
+                currentTaskId = result.task_id;
+                statusEl.innerHTML = '<span class="spinner"></span>正在加载字幕数据...';
+
+                // Get karaoke data
+                const karaokeRes = await fetch(`/karaoke/${currentTaskId}`);
+                if (!karaokeRes.ok) {
+                    throw new Error('无法加载字幕数据');
+                }
+                karaokeData = await karaokeRes.json();
+
+                // Create audio URL
+                const audioBlob = new Blob([await file.arrayBuffer()], { type: file.type });
+                audioUrl = URL.createObjectURL(audioBlob);
+                audioPlayer.src = audioUrl;
+
+                // Build karaoke HTML
+                buildKaraokeDisplay();
+
+                playerSection.classList.add('active');
+                statusEl.textContent = '转换完成！';
+
+                audioPlayer.addEventListener('loadedmetadata', () => {
+                    durationEl.textContent = formatTime(audioPlayer.duration);
+                });
+
+            } catch (err) {
+                statusEl.textContent = '错误: ' + err.message;
+                statusEl.className = 'status error';
+            } finally {
+                transcribeBtn.disabled = false;
+            }
+        });
+
+        function buildKaraokeDisplay() {
+            karaokeLine.innerHTML = '';
+
+            if (!karaokeData || !karaokeData.lines || karaokeData.lines.length === 0) {
+                karaokeLine.innerHTML = '<span class="word">无字幕数据</span>';
+                return;
+            }
+
+            // Get current line based on playback time
+            updateKaraokeLine();
+        }
+
+        function updateKaraokeLine() {
+            const currentTime = audioPlayer.currentTime;
+            const lines = karaokeData.lines;
+
+            // Find the current line
+            let currentLine = null;
+            let lineIndex = 0;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                if (currentTime >= line.start_time && currentTime <= line.end_time) {
+                    currentLine = line;
+                    lineIndex = i;
+                    break;
+                }
+            }
+
+            if (!currentLine) {
+                // Find the next upcoming line
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].start_time > currentTime) {
+                        currentLine = lines[i];
+                        lineIndex = i;
+                        break;
+                    }
+                }
+                if (!currentLine && lines.length > 0) {
+                    currentLine = lines[lines.length - 1];
+                    lineIndex = lines.length - 1;
+                }
+            }
+
+            if (!currentLine) {
+                karaokeLine.innerHTML = '';
+                return;
+            }
+
+            // Build karaoke HTML for the current line
+            const words = currentLine.words || [];
+            let html = '';
+
+            if (words.length > 0) {
+                for (const word of words) {
+                    const wordText = word.text || '';
+                    const wordStart = word.start_time;
+                    const wordEnd = word.end_time;
+
+                    let state = '';
+                    if (currentTime >= wordEnd) {
+                        state = 'done';
+                    } else if (currentTime >= wordStart) {
+                        state = 'active';
+                    }
+
+                    // Split CJK characters for finer karaoke effect
+                    const chars = [...wordText];
+                    if (chars.length > 1) {
+                        const charDuration = (wordEnd - wordStart) / chars.length;
+                        for (let i = 0; i < chars.length; i++) {
+                            const charStart = wordStart + i * charDuration;
+                            const charEnd = wordStart + (i + 1) * charDuration;
+
+                            let charState = '';
+                            if (currentTime >= charEnd) {
+                                charState = 'done';
+                            } else if (currentTime >= charStart) {
+                                charState = 'active';
+                            }
+
+                            html += `<span class="word ${charState}" data-start="${charStart}" data-end="${charEnd}">${chars[i]}</span>`;
+                        }
+                    } else {
+                        html += `<span class="word ${state}" data-start="${wordStart}" data-end="${wordEnd}">${wordText}</span>`;
+                    }
+                }
+            } else {
+                // Fallback: show plain text
+                html = `<span class="word done">${currentLine.text}</span>`;
+            }
+
+            karaokeLine.innerHTML = html;
+            karaokeLine.dataset.lineIndex = lineIndex;
+        }
+
+        // Update karaoke as audio plays
+        audioPlayer.addEventListener('timeupdate', () => {
+            const currentTime = audioPlayer.currentTime;
+            const duration = audioPlayer.duration || 1;
+
+            // Update progress bar
+            const progress = (currentTime / duration) * 100;
+            progressFill.style.width = `${progress}%`;
+
+            // Update time display
+            currentTimeEl.textContent = formatTime(currentTime);
+
+            // Update karaoke
+            updateKaraokeLine();
+
+            // Update word states
+            const wordSpans = karaokeLine.querySelectorAll('.word');
+            wordSpans.forEach(span => {
+                const start = parseFloat(span.dataset.start);
+                const end = parseFloat(span.dataset.end);
+
+                if (currentTime >= end) {
+                    span.classList.remove('active');
+                    span.classList.add('done');
+                } else if (currentTime >= start) {
+                    span.classList.remove('done');
+                    span.classList.add('active');
+                } else {
+                    span.classList.remove('active', 'done');
+                }
+            });
+        });
+
+        // Reset on audio end
+        audioPlayer.addEventListener('ended', () => {
+            progressFill.style.width = '0%';
+            currentTimeEl.textContent = formatTime(0);
+            buildKaraokeDisplay();
+        });
+
+        // Reset on audio seek
+        audioPlayer.addEventListener('seeked', () => {
+            buildKaraokeDisplay();
+        });
+
+        function formatTime(seconds) {
+            if (!seconds || isNaN(seconds)) return '0:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+    </script>
+</body>
+</html>

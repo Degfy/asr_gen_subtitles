@@ -45,5 +45,15 @@ def get_queue_size() -> int:
     return int(os.environ.get("API_QUEUE_SIZE", "1"))
 
 
+def get_api_host() -> str:
+    """Get API server host from config."""
+    return os.environ.get("API_HOST", "0.0.0.0")
+
+
+def get_api_port() -> int:
+    """Get API server port from config."""
+    return int(os.environ.get("API_PORT", "8000"))
+
+
 # Load config at module import
 _load_config()

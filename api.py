@@ -2,6 +2,7 @@
 
 import asyncio
 import glob
+import json
 import os
 import shutil
 import tempfile
@@ -12,6 +13,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from asr.pipeline import run_pipeline
@@ -89,8 +91,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Mount static files for web UI
+static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 
 # ── Endpoints ───────────────────────────────────────────────────
+
+
+@app.get("/")
+async def index():
+    """Serve the web UI."""
+    return FileResponse(str(Path(__file__).parent / "static" / "index.html"))
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
@@ -244,3 +256,64 @@ async def download(task_id: str, fmt: str, background_tasks: BackgroundTasks):
                 )
 
     raise HTTPException(404, "File not found or task expired")
+
+
+class KaraokeResponse(BaseModel):
+    """Response with karaoke subtitle data."""
+    task_id: str
+    lines: list
+    audio_path: Optional[str] = None
+
+
+@app.get("/karaoke/{task_id}", response_model=KaraokeResponse)
+async def get_karaoke(task_id: str):
+    """Get karaoke subtitle data for a completed task.
+
+    Returns subtitle lines with word-level timing for karaoke display.
+    """
+    temp_dir = tempfile.gettempdir()
+    for entry in os.listdir(temp_dir):
+        if entry.startswith(f"asr_{task_id}_"):
+            output_dir = os.path.join(temp_dir, entry)
+
+            # Find the audio file
+            audio_path = None
+            for f in os.listdir(output_dir):
+                if f.endswith(('.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac')):
+                    audio_path = os.path.join(output_dir, f)
+                    break
+
+            # Look for lines.json or raw.json
+            lines_path = None
+            raw_path = None
+            for f in os.listdir(output_dir):
+                if f.endswith('.lines.json'):
+                    lines_path = os.path.join(output_dir, f)
+                if f.endswith('.raw.json'):
+                    raw_path = os.path.join(output_dir, f)
+
+            if lines_path:
+                with open(lines_path, "r", encoding="utf-8") as f:
+                    lines_data = json.load(f)
+                return KaraokeResponse(
+                    task_id=task_id,
+                    lines=lines_data,
+                    audio_path=audio_path,
+                )
+            elif raw_path:
+                with open(raw_path, "r", encoding="utf-8") as f:
+                    raw_data = json.load(f)
+                return KaraokeResponse(
+                    task_id=task_id,
+                    lines=[{
+                        "text": raw_data.get("text", ""),
+                        "start_time": 0,
+                        "end_time": raw_data.get("duration", 0),
+                        "words": raw_data.get("words", []),
+                    }],
+                    audio_path=audio_path,
+                )
+
+            raise HTTPException(404, "No subtitle data found for task")
+
+    raise HTTPException(404, "Task not found or expired")

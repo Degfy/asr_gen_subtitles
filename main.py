@@ -5,6 +5,7 @@ import os
 import sys
 
 from asr.pipeline import run_pipeline
+from asr.config import get_api_host, get_api_port
 
 
 def main():
@@ -35,8 +36,8 @@ def main():
 
     # Serve command
     serve = subparsers.add_parser("serve", help="Start API server")
-    serve.add_argument("--host", default="0.0.0.0", help="Host to bind")
-    serve.add_argument("--port", type=int, default=8000, help="Port to bind")
+    serve.add_argument("--host", default=None, help="Host to bind (default: from config)")
+    serve.add_argument("--port", type=int, default=None, help="Port to bind (default: from config)")
     serve.add_argument("--reload", action="store_true", help="Enable auto-reload")
 
     args = parser.parse_args()
@@ -72,8 +73,8 @@ def main():
 
         uvicorn.run(
             "api:app",
-            host=args.host,
-            port=args.port,
+            host=args.host if args.host is not None else get_api_host(),
+            port=args.port if args.port is not None else get_api_port(),
             reload=args.reload,
         )
 
