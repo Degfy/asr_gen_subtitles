@@ -1,137 +1,216 @@
-# ASR Pipeline - Multi-stage Subtitle Generation
+# ASR Pipeline — 多阶段字幕生成
 
-Multi-stage subtitle generation pipeline using Qwen3-ASR with forced alignment. Converts audio to structured subtitles (SRT/ASS) with sentence breaking, text correction via CSV fixes, and karaoke-style highlighting. Provides both CLI and REST API interfaces.
+基于 Qwen3-ASR 的多阶段字幕生成流水线，支持强制对齐。可将音频转换为结构化字幕（SRT/ASS 格式），包含断句、CSV 文本修正、卡拉OK高亮效果。同时提供 CLI 和 REST API 两种接口。
 
-## Architecture
+## 架构
 
-### 4-Stage Pipeline
+### 4 阶段流水线
 
 ```
-Stage 1: ASR + Forced Alignment → flat word-level JSON
-Stage 2: Sentence Breaking      → paragraphs (。！？), then lines (max_chars)
-Stage 3: CSV Fix                → apply multiple fix CSVs for text correction
-Stage 4: Render                  → SRT and ASS output with style selection
+阶段 1: ASR + 强制对齐  → 扁平词级 JSON
+阶段 2: 断句           → 按段落（。！？）分句，再按 max_chars 分行
+阶段 3: CSV 修正       → 应用多个 CSV 修正文件
+阶段 4: 渲染           → 输出 SRT 和 ASS，支持样式选择
 ```
 
-Each stage saves intermediate JSON for debugging and resume support.
+每个阶段都会保存中间 JSON，便于调试和断点续传。
 
-### Backend Strategy
+### 后端策略
 
-- **CUDA**: Linux + NVIDIA GPU — uses `qwen-asr` + PyTorch with `Qwen3ForcedAligner`
-- **MLX**: macOS + Apple Silicon — uses `mlx-audio` with separate ASR + aligner models
-- Auto-detected via `scripts.shared.platform.get_backend()`
+- **CUDA**: Linux + NVIDIA GPU — 使用 `qwen_asr` + PyTorch 配合 `Qwen3ForcedAligner`
+- **MLX**: macOS + Apple Silicon — 使用 `mlx-audio`，ASR 和对齐模型独立加载
+- 通过 `asr.platform.get_backend()` 自动检测
 
-### Core Modules
+### 核心模块（`asr/` 包）
 
-| Module | Responsibility |
-|--------|----------------|
-| `asr_pipeline.py` | Pipeline orchestrator, stage coordination, resume support |
-| `qwen_asr_engine.py` | Qwen3-ASR engine (CUDA/MLX backends), forced alignment |
-| `subtitle_gen.py` | SRT/ASS rendering, karaoke effect tags (`\kf`) |
-| `api.py` | FastAPI REST service |
-| `main.py` | CLI entry point |
-| `scripts/shared/platform.py` | Backend detection (cuda/mlx) |
-| `scripts/shared/model_path.py` | Model path resolution/caching |
+| 模块 | 职责 |
+|------|------|
+| `asr/pipeline.py` | 流水线编排，阶段协调，断点续传 |
+| `asr/engine.py` | Qwen3-ASR 引擎（CUDA/MLX 后端），强制对齐 |
+| `asr/subtitle.py` | SRT/ASS 渲染，卡拉OK效果标签（\kf）|
+| `asr/text_utils.py` | CJK 字符处理，标点符号，字符计数 |
+| `asr/platform.py` | 后端检测（cuda/mlx）|
+| `asr/model_path.py` | 模型路径解析与缓存 |
+| `asr/download_models.py` | 模型下载脚本 |
 
-### Data Structures
+### 入口文件
 
-- `WordTimestamp` — single word with start/end time
-- `ASRResult` — flat word list (no segment grouping at ASR level)
-- `Paragraph` — sentence-level unit bounded by 。！？ punctuation
-- `SubtitleLine` — single subtitle line with timing, word-level data, pause_after
-- `ASSSubtitleStyle` — ASS style config (font, colors, karaoke mode)
+| 模块 | 职责 |
+|------|------|
+| `main.py` | CLI 入口 |
+| `api.py` | FastAPI REST 服务 |
 
-### Character Counting
+### 数据结构
 
-CJK characters = 1, non-CJK letters = 0.5, punctuation = 0. Used for max_chars line breaking.
+- `WordTimestamp` — 单词级时间戳（起始/结束时间）
+- `ASRResult` — 扁平词列表（ASR 阶段不分组）
+- `Paragraph` — 句子级单元，以 。！？ 标点为界
+- `SubtitleLine` — 单行字幕，包含时间、词级数据、pause_after
+- `ASSSubtitleStyle` — ASS 样式配置（字体、颜色、卡拉OK模式）
 
-## Installation
+### 字符计数
+
+CJK 字符 = 1，非 CJK 字母 = 0.5，标点符号 = 0。用于按 max_chars 断行。
+
+## 安装
+
+包管理使用 [uv](https://github.com/astral-sh/uv)。
 
 ```bash
-# Install dependencies
-pip install -e ".[cuda]"  # for CUDA (Linux + NVIDIA GPU)
-pip install -e ".[mlx]"   # for Apple Silicon (macOS M1/M2/M3/M4)
-pip install -e ".[dev]"   # dev dependencies
+# 安装依赖
+uv pip install -e ".[cuda]"  # CUDA 版（Linux + NVIDIA GPU）
+uv pip install -e ".[mlx]"   # Apple Silicon 版（macOS M1/M2/M3/M4）
+uv pip install -e ".[dev]"   # 开发依赖
 ```
 
-## CLI Usage
+## CLI 用法
 
 ```bash
-# Basic transcription (SRT output)
-python main.py transcribe audio.wav --output ./subs
+# 基本转录（输出 SRT）
+uv run main.py transcribe audio.wav --output ./subs
 
-# ASS format with style
-python main.py transcribe audio.wav --fmt ass --style default
+# 指定 ASS 格式和样式
+uv run main.py transcribe audio.wav --fmt ass --style default
 
-# With language hint
-python main.py transcribe audio.wav --language Chinese
+# 指定语言
+uv run main.py transcribe audio.wav --language Chinese
 
-# Smaller model (faster, lower accuracy)
-python main.py transcribe audio.wav --model-size 0.6B
+# 使用小模型（更快，精度略低）
+uv run main.py transcribe audio.wav --model-size 0.6B
 
-# Custom max characters per line
-python main.py transcribe audio.wav --max-chars 20
+# 自定义每行最大字符数
+uv run main.py transcribe audio.wav --max-chars 20
 
-# Apply text corrections from CSV files
-python main.py transcribe audio.wav --fix-dir ./fixes
+# 应用 CSV 文本修正
+uv run main.py transcribe audio.wav --fix-dir ./fixes
 
-# Resume from a specific stage
-python main.py transcribe audio.wav --resume-from render
+# 从指定阶段恢复
+uv run main.py transcribe audio.wav --resume-from render
 ```
 
-## API Server
+## API 服务
 
 ```bash
-# Start API server
-python main.py serve --host 0.0.0.0 --port 8000
+# 启动 API 服务
+uv run main.py serve --host 0.0.0.0 --port 8000
 
-# With auto-reload (development)
-python main.py serve --reload
+# 开发模式（自动重载）
+uv run main.py serve --reload
 ```
 
-### API Endpoints
+### API 端点
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Health check with backend info |
-| POST | `/transcribe` | Full pipeline (audio → SRT/ASS) |
-| POST | `/transcribe/text` | Text-only transcription |
-| GET | `/download/{task_id}/{fmt}` | Download generated subtitles |
+#### `GET /health` — 健康检查
+
+返回当前后端信息。
+
+**响应示例：**
+```json
+{
+  "status": "ok",
+  "backend": "mlx"
+}
+```
+
+---
+
+#### `POST /transcribe` — 完整流水线
+
+音频文件转字幕，支持 SRT/ASS 格式。
+
+**表单参数：**
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `audio` | file | 必填 | 音频文件（wav/mp3/flac/m4a/ogg/wma/aac）|
+| `language` | string | null | 语言提示（如 "Chinese"）|
+| `model_size` | string | "1.7B" | 模型大小："1.7B" 或 "0.6B" |
+| `max_chars` | int | 14 | 每行字幕最大字符数 |
+| `fmt` | string | "srt" | 输出格式："srt"、"ass" 或 "all" |
+| `ass_style` | string | "default" | ASS 样式名称 |
+| `fix_dir` | string | null | CSV 修正文件目录 |
+
+**响应示例：**
+```json
+{
+  "task_id": "550e8400-e29b-41d4-a716-446655440000",
+  "srt_path": "/tmp/asr_550e8400.../subtitle.srt",
+  "ass_path": null,
+  "status": "completed"
+}
+```
+
+---
+
+#### `POST /transcribe/text` — 仅转录文本
+
+快速文本转录，无时间戳，适用于不需要字幕格式的场景。
+
+**表单参数：**
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `audio` | file | 必填 | 音频文件 |
+| `language` | string | null | 语言提示 |
+| `model_size` | string | "1.7B" | 模型大小 |
+
+**响应示例：**
+```json
+{
+  "text": "这是转录的文本内容。",
+  "language": "mlx"
+}
+```
+
+---
+
+#### `GET /download/{task_id}/{fmt}` — 下载字幕文件
+
+下载指定任务生成的字幕文件。
+
+**路径参数：**
+
+| 参数 | 描述 |
+|------|------|
+| `task_id` | 转录任务返回的 task_id |
+| `fmt` | 文件格式："srt" 或 "ass" |
+
+**注意：** 文件在任务完成后一段时间内有效，请及时下载。
 
 ## Python API
 
 ```python
-from asr_pipeline import run_pipeline
+from asr.pipeline import run_pipeline
 
 result = run_pipeline(
     audio_path='audio.wav',
     output_dir='./subs',
-    fmt='srt',           # 'srt', 'ass', or 'all'
-    ass_style='default', # ASS style name
-    fix_dir='./fixes',   # optional CSV fix directory
-    language='Chinese',   # optional language hint
-    model_size='1.7B',   # '1.7B' or '0.6B'
-    max_chars=14,        # max characters per subtitle line
-    resume_from=None,   # 'asr', 'break', 'fix', 'render', or None
+    fmt='srt',           # 'srt', 'ass', 'all'
+    ass_style='default', # ASS 样式名
+    fix_dir='./fixes',   # 可选，CSV 修正目录
+    language='Chinese',  # 可选，语言提示
+    model_size='1.7B',   # '1.7B' 或 '0.6B'
+    max_chars=14,        # 每行字幕最大字符数
+    resume_from=None,    # 'asr', 'break', 'fix', 'render', None
 )
 ```
 
-## CSV Fix Format
+## CSV 修正格式
 
-Fix CSV files should be named `fix_1.csv`, `fix_2.csv`, etc. and placed in a fix directory:
+修正 CSV 文件应命名为 `fix_1.csv`、`fix_2.csv` 等，放入修正目录：
 
 ```csv
-# Format: original_text,replacement_text
-# Empty replacement deletes the line
+# 格式：原文,替换后文本
+# 替换为空则删除该行
 错误,正确
 要删除的文本,
 ```
 
-## Key Implementation Notes
+## 关键实现细节
 
-- Pipeline resumes from any stage via `resume_from` param
-- `split_line_after()` in pipeline splits a line at specific text, preserving word-level timing
-- CSV fixes in `fix_dir` applied sequentially (fix_1.csv, fix_2.csv, ...)
-- ASS karaoke uses `\kf` (fill) mode by default with golden highlight + white dim
-- Audio > 5 min on CUDA is automatically chunked into 30s segments
-- Long segments are split using smart algorithm that finds largest time gaps
+- 流水线支持通过 `resume_from` 参数从任意阶段恢复
+- `pipeline` 中的 `split_line_after()` 在特定文本处拆分行，同时保留词级时间
+- `fix_dir` 中的 CSV 修正按顺序应用（fix_1.csv, fix_2.csv, ...）
+- ASS 卡拉OK默认使用 `\kf`（填充）模式，金色高亮 + 白色暗淡
+- CUDA 上超过 5 分钟的音频自动分块为 30 秒段
+- 长段使用智能算法拆分，寻找最大时间间隙

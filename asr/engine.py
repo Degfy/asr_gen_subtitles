@@ -16,7 +16,9 @@ from typing import Optional
 from asr.platform import get_backend
 from asr.model_path import resolve_model_path
 
-# ASR model mapping: size -> model_id
+# ASR model mapping: backend -> size -> full model_id
+# For MLX, -8bit quantization is applied automatically; do NOT add it to ASR_MODEL_SIZE.
+# ASR_MODEL_SIZE env var accepts "1.7B" or "0.6B" only.
 ASR_MODELS = {
     "cuda": {
         "1.7B": "Qwen/Qwen3-ASR-1.7B",
