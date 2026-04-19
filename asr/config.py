@@ -1,7 +1,6 @@
 """Configuration loading from .env file."""
 
 import os
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +38,11 @@ def get_model_dir() -> Path:
 def get_model_size() -> str:
     """Get default model size from config."""
     return os.environ.get("ASR_MODEL_SIZE", "1.7B")
+
+
+def get_queue_size() -> int:
+    """Get API queue size from config."""
+    return int(os.environ.get("API_QUEUE_SIZE", "1"))
 
 
 # Load config at module import

@@ -100,18 +100,6 @@ def _has_model_files(model_dir: Path) -> bool:
     return False
 
 
-def _find_model_root(model_dir: Path) -> Path:
-    """Find the actual model root directory containing config.json."""
-    if (model_dir / "config.json").exists():
-        return model_dir
-    for subdir in model_dir.rglob("."):
-        if subdir == model_dir:
-            continue
-        if (subdir / "config.json").exists():
-            return subdir
-    return model_dir
-
-
 def is_model_cached(model_id: str, cache_dir: Optional[str] = None) -> bool:
     """Check if a model is already cached locally."""
     return _find_model_in_cache(model_id, cache_dir) is not None
@@ -140,8 +128,3 @@ def ensure_model(model_id: str, cache_dir: Optional[str] = None) -> bool:
     except Exception as e:
         print(f"Failed to download {model_id}: {e}")
         return False
-
-
-def clear_cache():
-    """Clear the model path cache."""
-    _model_cache.clear()

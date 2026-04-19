@@ -197,6 +197,9 @@ def _smart_split(words: list, max_chars: int) -> list:
 
 def _split_and_recurse(words: list, split_idx: int, max_chars: int) -> list:
     """Split words at index and recursively smart-split both halves."""
+    if split_idx <= 0 or split_idx >= len(words):
+        line = _words_to_line(words)
+        return [line] if line else []
     left_lines = _smart_split(words[:split_idx], max_chars)
     right_lines = _smart_split(words[split_idx:], max_chars)
     return left_lines + right_lines
@@ -237,11 +240,11 @@ def _find_best_force_split(words: list, max_chars: int) -> int:
 
     Strategy: In the middle region (40%-60% of total length),
     find the point with largest time gap.
+    Falls back to simple middle split if all gaps are zero.
     """
     if len(words) < 2:
         return 0
 
-    # Calculate total length and find middle region
     total_len = words_cjk_len(words)
     target_left = total_len * 0.4
     target_right = total_len * 0.6
@@ -260,16 +263,20 @@ def _find_best_force_split(words: list, max_chars: int) -> int:
     if end_idx == 0:
         end_idx = len(words) // 2
     if start_idx == 0:
-        start_idx = len(words) // 2 - 2
+        start_idx = max(1, len(words) // 2 - 2)
 
-    # Find largest gap in middle region
+    end_idx = min(end_idx, len(words) - 1)
+
     best_idx = start_idx
     best_gap = 0
-    for i in range(start_idx, min(end_idx + 1, len(words))):
+    for i in range(start_idx, end_idx + 1):
         gap = _get_time_gap(words, i)
         if gap > best_gap:
             best_gap = gap
             best_idx = i
+
+    if best_idx == 0 or best_idx >= len(words):
+        best_idx = len(words) // 2
 
     return best_idx
 
@@ -329,9 +336,7 @@ def stage3_fix(lines: list, fix_dir: str) -> list:
                         break
                     else:
                         line.text = line.text.replace(orig, repl)
-                        for w in line.words:
-                            if orig in w.get("text", ""):
-                                w["text"] = w["text"].replace(orig, repl)
+                        line.words = _rebuild_words(line.words, orig, repl)
 
             if line.text != original and line.text:
                 total_replacements += 1
@@ -342,6 +347,27 @@ def stage3_fix(lines: list, fix_dir: str) -> list:
     print(f"  Replacements: {total_replacements}, Deletions: {total_deletions} "
           f"({before} → {after} lines)")
     return lines
+
+
+def _rebuild_words(words: list, orig: str, repl: str) -> list:
+    """Rebuild word list after text replacement, preserving timing for unchanged parts."""
+    if not words:
+        return []
+    result = []
+    for w in words:
+        text = w.get("text", "")
+        if orig in text:
+            idx = text.index(orig)
+            before_text = text[:idx]
+            after_text = text[idx + len(orig):]
+            if before_text:
+                result.append(dict(w, text=before_text))
+            result.append(dict(w, text=repl))
+            if after_text:
+                result.append(dict(w, text=after_text))
+        else:
+            result.append(dict(w))
+    return result
 
 
 def _load_csv(csv_path: str) -> dict:

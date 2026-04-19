@@ -1,19 +1,22 @@
 """FastAPI service for ASR pipeline."""
 
+import asyncio
 import glob
 import os
+import shutil
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from asr.pipeline import run_pipeline
 from asr.engine import asr_transcribe
+from asr.config import get_queue_size
 
 
 # ── Request/Response models ──────────────────────────────────────
@@ -54,11 +57,26 @@ class HealthResponse(BaseModel):
     backend: str
 
 
+# ── Queue ───────────────────────────────────────────────────────
+
+_queue_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_queue_semaphore() -> asyncio.Semaphore:
+    """Get or create the queue semaphore."""
+    global _queue_semaphore
+    if _queue_semaphore is None:
+        _queue_semaphore = asyncio.Semaphore(get_queue_size())
+    return _queue_semaphore
+
+
 # ── Lifespan ────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    # Initialize semaphore on startup
+    _get_queue_semaphore()
     yield
 
 
@@ -98,6 +116,15 @@ async def transcribe(
     # Validate format
     if fmt not in ("srt", "ass", "all"):
         raise HTTPException(400, f"Invalid format: {fmt}. Must be srt, ass, or all")
+
+    # Acquire queue slot (non-blocking)
+    semaphore = _get_queue_semaphore()
+    if semaphore.locked():
+        raise HTTPException(
+            503,
+            f"Queue is full. Maximum concurrent tasks: {get_queue_size()}. Please try again later.",
+        )
+    await semaphore.acquire()
 
     # Save uploaded file to temp location
     task_id = str(uuid.uuid4())
@@ -142,7 +169,8 @@ async def transcribe(
     except Exception as e:
         raise HTTPException(500, str(e))
     finally:
-        # Cleanup temp audio file
+        semaphore.release()
+        # Cleanup temp audio file only (output_dir kept for /download)
         if os.path.exists(audio_path):
             os.unlink(audio_path)
 
@@ -157,6 +185,15 @@ async def transcribe_text(
 
     Faster than full pipeline, returns only transcribed text.
     """
+    # Acquire queue slot (non-blocking)
+    semaphore = _get_queue_semaphore()
+    if semaphore.locked():
+        raise HTTPException(
+            503,
+            f"Queue is full. Maximum concurrent tasks: {get_queue_size()}. Please try again later.",
+        )
+    await semaphore.acquire()
+
     # Save uploaded file to temp location
     with tempfile.NamedTemporaryFile(suffix=Path(audio.filename).suffix, delete=False) as tmp:
         content = await audio.read()
@@ -179,13 +216,14 @@ async def transcribe_text(
     except Exception as e:
         raise HTTPException(500, str(e))
     finally:
+        semaphore.release()
         # Cleanup temp audio file
         if os.path.exists(audio_path):
             os.unlink(audio_path)
 
 
 @app.get("/download/{task_id}/{fmt}")
-async def download(task_id: str, fmt: str):
+async def download(task_id: str, fmt: str, background_tasks: BackgroundTasks):
     """Download generated subtitle file."""
     if fmt not in ("srt", "ass"):
         raise HTTPException(400, "Format must be srt or ass")
@@ -198,6 +236,7 @@ async def download(task_id: str, fmt: str):
             file_path = os.path.join(output_dir, f"*.{fmt}")
             matches = glob.glob(file_path)
             if matches:
+                background_tasks.add_task(shutil.rmtree, output_dir, ignore_errors=True)
                 return FileResponse(
                     matches[0],
                     media_type="text/plain",

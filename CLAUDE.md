@@ -23,13 +23,15 @@ Each stage saves intermediate JSON for debugging and resume support.
 
 | Module | Responsibility |
 |--------|----------------|
+| Module | Responsibility |
+|--------|----------------|
 | `asr/pipeline.py` | Pipeline orchestrator, stage coordination, resume support |
 | `asr/engine.py` | Qwen3-ASR engine (CUDA/MLX backends), forced alignment |
 | `asr/subtitle.py` | SRT/ASS rendering, karaoke effect tags (\kf) |
 | `asr/text_utils.py` | CJK character handling, punctuation, character counting |
 | `asr/platform.py` | Backend detection (cuda/mlx) |
 | `asr/model_path.py` | Model path resolution/caching |
-| `asr/download_models.py` | Model download script |
+| `asr/config.py` | Configuration loading from .env file |
 
 ### Entry Points
 

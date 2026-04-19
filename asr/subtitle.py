@@ -172,7 +172,7 @@ class ASSSubtitleStyle:
     @classmethod
     def from_name(cls, name: str) -> "ASSSubtitleStyle":
         """Look up a preset style by name. Only 'default' is available."""
-        if name in ("default", "yingshijf", "neon", "warm", "classic", "cyber", "ocean"):
+        if name == "default":
             return cls()
         raise ValueError(f"Unknown style '{name}'. Available: default")
 
