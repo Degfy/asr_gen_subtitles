@@ -21,16 +21,16 @@ from asr.subtitle import SubtitleLine, ASSSubtitleStyle, render_srt_from_lines, 
 from asr.text_utils import (
     SENTENCE_END, COMMA_LIKE, TRAILING_STRIP,
     word_cjk_len, words_cjk_len, text_cjk_count,
-    ends_with_any, text_of_words,
+    ends_with_any, text_of_words, is_punctuation,
 )
 from asr.model_path import is_model_cached, ensure_model
 from asr.platform import get_backend
-from asr.config import get_model_dir, get_model_size
+from asr.config import get_model_dir, get_model_size, get_intermediate_dir
 
 
 # ── Stage 1: ASR + Forced Alignment ──────────────────────────────
 
-def stage1_asr(audio_path: str, output_dir: str, language: Optional[str] = None, model_size: str = "1.7B") -> dict:
+def stage1_asr(audio_path: str, output_dir: str, language: Optional[str] = None, model_size: str = "1.7B", task_id: Optional[str] = None) -> dict:
     """Stage 1: Run ASR with forced alignment, save flat word-level JSON.
 
     Returns dict with 'text', 'language', 'duration', 'words' (flat list).
@@ -41,7 +41,7 @@ def stage1_asr(audio_path: str, output_dir: str, language: Optional[str] = None,
     result_dict = result_to_dict(result)
     result_dict["source"] = os.path.basename(audio_path)
 
-    raw_path = os.path.join(output_dir, _raw_json_name(audio_path))
+    raw_path = os.path.join(output_dir, _raw_json_name(audio_path, task_id))
     os.makedirs(output_dir, exist_ok=True)
     with open(raw_path, "w", encoding="utf-8") as f:
         json.dump(result_dict, f, ensure_ascii=False, indent=2)
@@ -50,7 +50,7 @@ def stage1_asr(audio_path: str, output_dir: str, language: Optional[str] = None,
 
 
 def stage1_align(audio_path: str, output_dir: str, align_text: str,
-                 language: Optional[str] = None) -> dict:
+                 language: Optional[str] = None, task_id: Optional[str] = None) -> dict:
     """Stage 1 (alignment-only): User provides text, we only timestamp it.
 
     Skips ASR transcription. Uses ForcedAligner directly on provided text.
@@ -62,7 +62,7 @@ def stage1_align(audio_path: str, output_dir: str, align_text: str,
     result_dict = result_to_dict(result)
     result_dict["source"] = os.path.basename(audio_path)
 
-    raw_path = os.path.join(output_dir, _raw_json_name(audio_path))
+    raw_path = os.path.join(output_dir, _raw_json_name(audio_path, task_id))
     os.makedirs(output_dir, exist_ok=True)
     with open(raw_path, "w", encoding="utf-8") as f:
         json.dump(result_dict, f, ensure_ascii=False, indent=2)
@@ -73,7 +73,7 @@ def stage1_align(audio_path: str, output_dir: str, align_text: str,
 # ── Stage 2: Sentence Breaking (two-pass) ────────────────────────
 
 def stage2_break(result_dict: dict, output_dir: str, audio_path: str,
-                 max_chars: int = 14) -> list[SubtitleLine]:
+                 max_chars: int = 14, task_id: Optional[str] = None) -> list[SubtitleLine]:
     """Stage 2: Text-first sentence breaking.
 
     Pass 1: Split flat words into paragraphs by sentence-end punctuation (。！？)
@@ -104,7 +104,7 @@ def stage2_break(result_dict: dict, output_dir: str, audio_path: str,
         all_lines[i].pause_after = max(0, gap)
 
     # Save intermediate
-    lines_path = os.path.join(output_dir, _lines_json_name(audio_path))
+    lines_path = os.path.join(output_dir, _lines_json_name(audio_path, task_id))
     _save_lines(all_lines, lines_path)
     print(f"  Pass 2: {len(all_lines)} lines, saved: {lines_path}")
     return all_lines
@@ -647,6 +647,8 @@ def run_pipeline(
     max_chars: int = 14,
     resume_from: Optional[str] = None,
     align_text: Optional[str] = None,
+    intermediate_dir: Optional[str] = None,
+    task_id: Optional[str] = None,
 ) -> dict:
     """Run the full ASR subtitle generation pipeline."""
     # Apply defaults
@@ -665,6 +667,14 @@ def run_pipeline(
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
+    # Intermediate products dir: param > config > output_dir
+    if intermediate_dir is None:
+        intermediate_dir = get_intermediate_dir()
+    if intermediate_dir is None:
+        intermediate_dir = output_dir
+    intermediate_dir = os.path.abspath(intermediate_dir)
+    os.makedirs(intermediate_dir, exist_ok=True)
+
     all_stages = ["asr", "break", "fix", "render"]
     start_idx = 0
     if resume_from:
@@ -676,30 +686,45 @@ def run_pipeline(
     # Stage 1: ASR + Align
     if start_idx <= 0:
         if align_text:
-            result_dict = stage1_align(audio_path, output_dir, align_text, language)
+            result_dict = stage1_align(audio_path, intermediate_dir, align_text, language, task_id)
         else:
-            result_dict = stage1_asr(audio_path, output_dir, language, model_size)
+            result_dict = stage1_asr(audio_path, intermediate_dir, language, model_size, task_id)
     else:
-        raw_path = os.path.join(output_dir, _raw_json_name(audio_path))
+        raw_path = os.path.join(intermediate_dir, _raw_json_name(audio_path, task_id))
         print(f"[Stage 1] Skipping, loading: {raw_path}")
         with open(raw_path, "r", encoding="utf-8") as f:
             result_dict = json.load(f)
 
+    def clean_more_punctuation(text: str) -> str:
+        if not text:
+            return text
+        result = [text[0]]
+        for char in text[1:]:
+            prev = result[-1]
+            if not (is_punctuation(char) and is_punctuation(prev) and char == prev):
+                result.append(char)
+        return ''.join(result)
+
+    # Clean up duplicate consecutive punctuation in word texts
+    for word in result_dict.get("words", []):
+        text = word.get("text", "")
+        word["text"] = clean_more_punctuation(text)
+
     # Stage 2: Sentence Breaking
     if start_idx <= 1:
-        lines = stage2_break(result_dict, output_dir, audio_path, max_chars)
+        lines = stage2_break(result_dict, intermediate_dir, audio_path, max_chars, task_id)
     else:
-        lines_path = os.path.join(output_dir, _lines_json_name(audio_path))
+        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
         print(f"[Stage 2] Skipping, loading: {lines_path}")
         lines = _load_lines(lines_path)
 
     # Stage 3: CSV Fix
     if fix_dir and start_idx <= 2:
         lines = stage3_fix(lines, fix_dir)
-        lines_path = os.path.join(output_dir, _lines_json_name(audio_path))
+        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
         _save_lines(lines, lines_path)
     elif fix_dir and start_idx > 2:
-        lines_path = os.path.join(output_dir, _lines_json_name(audio_path))
+        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
         print(f"[Stage 3] Skipping, loading: {lines_path}")
         lines = _load_lines(lines_path)
     else:
@@ -710,7 +735,7 @@ def run_pipeline(
     if errors:
         print(f"\n[BLOCKED] Fix {len(errors)} issue(s) before rendering.")
         print("Use 'xt asr-split' to split long lines, then re-run with --resume-from render")
-        return {"check_errors": errors, "lines_path": os.path.join(output_dir, _lines_json_name(audio_path))}
+        return {"check_errors": errors, "lines_path": os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))}
 
     # Pre-render: strip trailing punctuation from each line
     _strip_trailing_punct(lines)
@@ -723,12 +748,16 @@ def run_pipeline(
 
 # ── Persistence helpers ───────────────────────────────────────────
 
-def _raw_json_name(audio_path: str) -> str:
+def _raw_json_name(audio_path: str, task_id: Optional[str] = None) -> str:
+    if task_id:
+        return f"{task_id}.raw.json"
     base = os.path.splitext(os.path.basename(audio_path))[0]
     return f"{base}.raw.json"
 
 
-def _lines_json_name(audio_path: str) -> str:
+def _lines_json_name(audio_path: str, task_id: Optional[str] = None) -> str:
+    if task_id:
+        return f"{task_id}.lines.json"
     base = os.path.splitext(os.path.basename(audio_path))[0]
     return f"{base}.lines.json"
 
