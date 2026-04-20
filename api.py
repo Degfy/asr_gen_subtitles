@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -131,17 +131,18 @@ async def health():
 @app.post("/transcribe", response_model=TranscribeResponse)
 async def transcribe(
     audio: UploadFile = File(...),
-    language: Optional[str] = None,
-    model_size: str = "1.7B",
-    max_chars: int = 14,
-    fmt: str = "srt",
-    ass_style: str = "default",
-    fix_dir: Optional[str] = None,
+    language: Optional[str] = Form(default=None),
+    model_size: str = Form(default="1.7B"),
+    max_chars: int = Form(default=14),
+    fmt: str = Form(default="srt"),
+    ass_style: str = Form(default="default"),
+    fix_dir: Optional[str] = Form(default=None),
 ):
     """Full pipeline transcription - audio to subtitles.
 
     Accepts audio file upload and returns SRT/ASS subtitle files.
     """
+    print(f"[DEBUG /transcribe] language={language!r}, model_size={model_size!r}, max_chars={max_chars!r}, fmt={fmt!r}, ass_style={ass_style!r}, fix_dir={fix_dir!r}")
     # Validate format
     if fmt not in ("srt", "ass", "all"):
         raise HTTPException(400, f"Invalid format: {fmt}. Must be srt, ass, or all")
@@ -184,6 +185,15 @@ async def transcribe(
 
         srt_path = result.get("srt")
         ass_path = result.get("ass")
+        print(f"[DEBUG /transcribe] fmt={fmt}, result={result}")
+
+        # When fmt=ass or fmt=all but ass_path is missing, check if ASS file was created
+        if fmt in ("ass", "all") and not ass_path:
+            task_dir = os.path.join(os.path.abspath(get_tasks_dir()), task_id)
+            ass_matches = glob.glob(os.path.join(task_dir, "*.ass"))
+            print(f"[DEBUG /transcribe] glob task_dir={task_dir}, ass_matches={ass_matches}")
+            if ass_matches:
+                ass_path = ass_matches[0]
 
         return TranscribeResponse(
             task_id=task_id,
@@ -252,11 +262,11 @@ async def transcribe_text(
 @app.post("/align", response_model=AlignResponse)
 async def align(
     audio: UploadFile = File(...),
-    text: str = File(...),
-    language: Optional[str] = None,
-    max_chars: int = 14,
-    fmt: str = "srt",
-    ass_style: str = "default",
+    text: str = Form(...),
+    language: Optional[str] = Form(default=None),
+    max_chars: int = Form(default=14),
+    fmt: str = Form(default="srt"),
+    ass_style: str = Form(default="default"),
 ):
     """Alignment-only mode: audio + pre-transcribed text → subtitles.
 
@@ -307,6 +317,13 @@ async def align(
         srt_path = result.get("srt")
         ass_path = result.get("ass")
 
+        # When fmt=ass or fmt=all but ass_path is missing, check if ASS file was created
+        if fmt in ("ass", "all") and not ass_path:
+            task_dir = os.path.join(os.path.abspath(get_tasks_dir()), task_id)
+            ass_matches = glob.glob(os.path.join(task_dir, "*.ass"))
+            if ass_matches:
+                ass_path = ass_matches[0]
+
         return AlignResponse(
             task_id=task_id,
             srt_url=f"/download/{task_id}/srt" if srt_path else None,
@@ -330,7 +347,7 @@ async def download(task_id: str, fmt: str):
     if fmt not in allowed:
         raise HTTPException(400, f"Format must be {', '.join(allowed)}")
 
-    task_dir = os.path.join(get_tasks_dir(), task_id)
+    task_dir = os.path.join(os.path.abspath(get_tasks_dir()), task_id)
     if not os.path.isdir(task_dir):
         raise HTTPException(404, "Task not found")
 

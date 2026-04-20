@@ -514,6 +514,7 @@
                     return;
                 }
 
+                const result = await response.json();
                 if (!response.ok) {
                     throw new Error(result.detail || '处理失败');
                 }
@@ -548,6 +549,8 @@
             } catch (err) {
                 statusEl.textContent = '错误: ' + err.message;
                 statusEl.className = 'status error';
+                console.log(err)
+                console.log(err.stack)
             } finally {
                 updateTranscribeBtn();
             }

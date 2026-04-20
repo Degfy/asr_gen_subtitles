@@ -583,6 +583,7 @@ def _make_line(words: list, template: SubtitleLine) -> SubtitleLine:
 def stage4_render(lines: list, output_dir: str, audio_path: str,
                   fmt: str = "srt", ass_style="default"):
     """Stage 4: Render SubtitleLines to SRT and/or ASS files."""
+    print(f"[Stage 4 Render] fmt={fmt}, ass_style={ass_style}, output_dir={output_dir}")
     base = os.path.splitext(os.path.basename(audio_path))[0]
     os.makedirs(output_dir, exist_ok=True)
     paths = {}
@@ -596,6 +597,7 @@ def stage4_render(lines: list, output_dir: str, audio_path: str,
     if fmt in ("ass", "all"):
         ass_path = os.path.join(output_dir, f"{base}.ass")
         style = ASSSubtitleStyle.from_name(ass_style)
+        print(f"[Stage 4 Render] Generating ASS: {ass_path}, style={ass_style}")
         render_ass_from_lines(lines, ass_path, style)
         paths["ass"] = ass_path
         print(f"  ASS: {ass_path}")
