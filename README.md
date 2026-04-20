@@ -142,6 +142,23 @@ uv run main.py serve --reload
 
 ---
 
+#### `POST /align` — 仅做强制对齐
+
+跳过 ASR 识别，直接对音频和给定文本进行强制对齐，输出字幕。
+
+**表单参数：**
+
+| 参数 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `audio` | file | 必填 | 音频文件 |
+| `text` | string | 必填 | 要对齐的文本 |
+| `language` | string | null | 语言提示 |
+| `max_chars` | int | 14 | 每行字幕最大字符数 |
+| `fmt` | string | "srt" | 输出格式："srt"、"ass" 或 "all" |
+| `ass_style` | string | "default" | ASS 样式名称 |
+
+---
+
 #### `POST /transcribe/text` — 仅转录文本
 
 快速文本转录，无时间戳，适用于不需要字幕格式的场景。
