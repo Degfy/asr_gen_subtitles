@@ -262,6 +262,14 @@
             color: #888;
             margin-top: 0.5rem;
         }
+        .text-result-area {
+            margin-bottom: 1.5rem;
+        }
+        .section-title {
+            font-size: 0.9rem;
+            color: #aaa;
+            margin-bottom: 0.5rem;
+        }
     </style>
 </head>
 <body>
@@ -281,6 +289,10 @@
                 <div class="mode-title">ASR 识别</div>
                 <div class="mode-desc">上传音频，自动识别文字</div>
             </div>
+            <div class="mode-btn" id="modeText" onclick="setMode('text')">
+                <div class="mode-title">文字识别</div>
+                <div class="mode-desc">快速识别文字（无时间戳）</div>
+            </div>
             <div class="mode-btn" id="modeAlign" onclick="setMode('align')">
                 <div class="mode-title">文本对齐</div>
                 <div class="mode-desc">提供音频和文字，只做对齐</div>
@@ -290,6 +302,12 @@
         <div class="text-input-area" id="textInputArea">
             <textarea id="transcriptText" placeholder="在此粘贴音频对应的文稿内容..."></textarea>
             <div class="input-hint">请输入准确的文稿内容，系统将自动对齐时间轴</div>
+        </div>
+
+        <div class="text-result-area" id="textResultArea" style="display: none;">
+            <div class="section-title">识别结果</div>
+            <div id="textResult" style="background: #2a2a4a; border-radius: 8px; padding: 1rem; min-height: 120px; white-space: pre-wrap; word-break: break-all;"></div>
+            <div class="input-hint">识别语言: <span id="detectedLang"></span></div>
         </div>
 
         <div class="controls">
@@ -347,7 +365,11 @@
         const durationEl = document.getElementById('duration');
         const transcriptText = document.getElementById('transcriptText');
         const textInputArea = document.getElementById('textInputArea');
+        const textResultArea = document.getElementById('textResultArea');
+        const textResult = document.getElementById('textResult');
+        const detectedLang = document.getElementById('detectedLang');
         const modeAsr = document.getElementById('modeAsr');
+        const modeText = document.getElementById('modeText');
         const modeAlign = document.getElementById('modeAlign');
 
         let currentTaskId = null;
@@ -357,13 +379,23 @@
 
         function setMode(mode) {
             currentMode = mode;
+            textResultArea.style.display = 'none';
+            playerSection.classList.remove('active');
             if (mode === 'asr') {
                 modeAsr.classList.add('active');
+                modeText.classList.remove('active');
                 modeAlign.classList.remove('active');
                 textInputArea.classList.remove('active');
                 transcribeBtn.textContent = '开始转换';
+            } else if (mode === 'text') {
+                modeAsr.classList.remove('active');
+                modeText.classList.add('active');
+                modeAlign.classList.remove('active');
+                textInputArea.classList.remove('active');
+                transcribeBtn.textContent = '开始识别';
             } else {
                 modeAsr.classList.remove('active');
+                modeText.classList.remove('active');
                 modeAlign.classList.add('active');
                 textInputArea.classList.add('active');
                 transcribeBtn.textContent = '开始对齐';
@@ -452,13 +484,35 @@
             }
 
             try {
-                const endpoint = currentMode === 'align' ? '/align' : '/transcribe';
+                let endpoint, method;
+                if (currentMode === 'text') {
+                    endpoint = '/transcribe/text';
+                    method = 'POST';
+                } else if (currentMode === 'align') {
+                    endpoint = '/align';
+                    method = 'POST';
+                } else {
+                    endpoint = '/transcribe';
+                    method = 'POST';
+                }
+
                 const response = await fetch(endpoint, {
-                    method: 'POST',
+                    method: method,
                     body: formData,
                 });
 
-                const result = await response.json();
+                if (currentMode === 'text') {
+                    const result = await response.json();
+                    if (!response.ok) {
+                        throw new Error(result.detail || '处理失败');
+                    }
+                    textResult.textContent = result.text || '（无识别结果）';
+                    detectedLang.textContent = result.language || '未知';
+                    textResultArea.style.display = 'block';
+                    statusEl.textContent = '识别完成！';
+                    transcribeBtn.disabled = false;
+                    return;
+                }
 
                 if (!response.ok) {
                     throw new Error(result.detail || '处理失败');
