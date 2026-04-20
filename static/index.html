@@ -262,6 +262,14 @@
             color: #888;
             margin-top: 0.5rem;
         }
+        .download-section button {
+            background: #2a2a4a;
+            border: 1px solid #4a4a6a;
+        }
+        .download-section button:hover:not(:disabled) {
+            background: #3a3a5a;
+            border-color: #7c7cff;
+        }
         .text-result-area {
             margin-bottom: 1.5rem;
         }
@@ -348,6 +356,15 @@
                 <span id="duration">0:00</span>
             </div>
             <audio id="audioPlayer" controls></audio>
+        </div>
+
+        <div class="download-section" id="downloadSection" style="display: none; margin-top: 1rem;">
+            <div class="section-title">下载字幕</div>
+            <div style="display: flex; gap: 0.8rem; flex-wrap: wrap;">
+                <button id="downloadAss" onclick="downloadFile('ass')">下载 ASS</button>
+                <button id="downloadSrt" onclick="downloadFile('srt')">下载 SRT</button>
+                <button id="downloadLines" onclick="downloadFile('lines')">下载 Lines</button>
+            </div>
         </div>
     </div>
 
@@ -540,6 +557,7 @@
                 buildKaraokeDisplay();
 
                 playerSection.classList.add('active');
+                document.getElementById('downloadSection').style.display = 'block';
                 statusEl.textContent = currentMode === 'align' ? '对齐完成！' : '转换完成！';
 
                 audioPlayer.addEventListener('loadedmetadata', () => {
@@ -701,6 +719,16 @@
             const mins = Math.floor(seconds / 60);
             const secs = Math.floor(seconds % 60);
             return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        async function downloadFile(fmt) {
+            if (!currentTaskId) return;
+            const a = document.createElement('a');
+            a.href = `/download/${currentTaskId}/${fmt}`;
+            a.download = `subtitle.${fmt}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
         }
     </script>
 </body>
