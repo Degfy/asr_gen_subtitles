@@ -467,12 +467,14 @@
                 currentTaskId = result.task_id;
                 statusEl.innerHTML = '<span class="spinner"></span>正在加载字幕数据...';
 
-                // Get karaoke data
-                const karaokeRes = await fetch(`/karaoke/${currentTaskId}`);
-                if (!karaokeRes.ok) {
+                // Fetch lines.json directly - returns array directly, not wrapped object
+                const linesRes = await fetch(`/download/${currentTaskId}/lines`);
+                if (!linesRes.ok) {
                     throw new Error('无法加载字幕数据');
                 }
-                karaokeData = await karaokeRes.json();
+                const linesData = await linesRes.json();
+                // Normalize: API returns array directly, wrap in object for karaoke display
+                karaokeData = Array.isArray(linesData) ? { lines: linesData } : linesData;
 
                 // Create audio URL
                 const audioBlob = new Blob([await file.arrayBuffer()], { type: file.type });

@@ -5,7 +5,7 @@ import os
 import sys
 
 from asr.pipeline import run_pipeline
-from asr.config import get_api_host, get_api_port, get_intermediate_dir
+from asr.config import get_api_host, get_api_port
 
 
 def main():
@@ -62,7 +62,6 @@ def main():
             model_size=args.model_size,
             max_chars=args.max_chars,
             resume_from=args.resume_from,
-            intermediate_dir=get_intermediate_dir(),
         )
 
         if isinstance(result, dict) and "check_errors" in result:

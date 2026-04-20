@@ -2,23 +2,21 @@
 
 import asyncio
 import glob
-import json
 import os
-import shutil
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from asr.pipeline import run_pipeline
 from asr.engine import asr_transcribe
-from asr.config import get_queue_size, get_intermediate_dir
+from asr.config import get_queue_size, get_tasks_dir
 
 
 # ── Request/Response models ──────────────────────────────────────
@@ -43,18 +41,20 @@ class AlignRequest(BaseModel):
 
 
 class TranscribeResponse(BaseModel):
-    """Response with paths to generated subtitle files."""
+    """Response with URLs to generated subtitle files."""
     task_id: str
-    srt_path: Optional[str] = None
-    ass_path: Optional[str] = None
+    srt_url: Optional[str] = None
+    ass_url: Optional[str] = None
+    lines_url: Optional[str] = None
     status: str = "completed"
 
 
 class AlignResponse(BaseModel):
     """Response for alignment-only mode."""
     task_id: str
-    srt_path: Optional[str] = None
-    ass_path: Optional[str] = None
+    srt_url: Optional[str] = None
+    ass_url: Optional[str] = None
+    lines_url: Optional[str] = None
     status: str = "completed"
 
 
@@ -167,20 +167,15 @@ async def transcribe(
         tmp.write(content)
         audio_path = tmp.name
 
-    # Create output directory
-    output_dir = tempfile.mkdtemp(prefix=f"asr_{task_id}_")
-
     try:
         result = run_pipeline(
             audio_path=audio_path,
-            output_dir=output_dir,
             fmt=fmt,
             ass_style=ass_style,
             fix_dir=fix_dir,
             language=language,
             model_size=model_size,
             max_chars=max_chars,
-            intermediate_dir=get_intermediate_dir(),
             task_id=task_id,
         )
 
@@ -192,8 +187,9 @@ async def transcribe(
 
         return TranscribeResponse(
             task_id=task_id,
-            srt_path=srt_path,
-            ass_path=ass_path,
+            srt_url=f"/download/{task_id}/srt" if srt_path else None,
+            ass_url=f"/download/{task_id}/ass" if ass_path else None,
+            lines_url=f"/download/{task_id}/lines",
             status="completed",
         )
 
@@ -294,18 +290,14 @@ async def align(
         tmp.write(content)
         audio_path = tmp.name
 
-    output_dir = tempfile.mkdtemp(prefix=f"asr_{task_id}_")
-
     try:
         result = run_pipeline(
             audio_path=audio_path,
-            output_dir=output_dir,
             fmt=fmt,
             ass_style=ass_style,
             language=language,
             max_chars=max_chars,
             align_text=text.strip(),
-            intermediate_dir=get_intermediate_dir(),
             task_id=task_id,
         )
 
@@ -317,8 +309,9 @@ async def align(
 
         return AlignResponse(
             task_id=task_id,
-            srt_path=srt_path,
-            ass_path=ass_path,
+            srt_url=f"/download/{task_id}/srt" if srt_path else None,
+            ass_url=f"/download/{task_id}/ass" if ass_path else None,
+            lines_url=f"/download/{task_id}/lines",
             status="completed",
         )
 
@@ -331,112 +324,35 @@ async def align(
 
 
 @app.get("/download/{task_id}/{fmt}")
-async def download(task_id: str, fmt: str, background_tasks: BackgroundTasks):
-    """Download generated subtitle file."""
-    if fmt not in ("srt", "ass"):
-        raise HTTPException(400, "Format must be srt or ass")
+async def download(task_id: str, fmt: str):
+    """Download generated file (srt, ass, or lines.json)."""
+    allowed = ("srt", "ass", "lines")
+    if fmt not in allowed:
+        raise HTTPException(400, f"Format must be {', '.join(allowed)}")
 
-    # Find the output directory for this task
-    temp_dir = tempfile.gettempdir()
-    for entry in os.listdir(temp_dir):
-        if entry.startswith(f"asr_{task_id}_"):
-            output_dir = os.path.join(temp_dir, entry)
-            file_path = os.path.join(output_dir, f"*.{fmt}")
-            matches = glob.glob(file_path)
-            if matches:
-                background_tasks.add_task(shutil.rmtree, output_dir, ignore_errors=True)
-                return FileResponse(
-                    matches[0],
-                    media_type="text/plain",
-                    filename=f"subtitle.{fmt}",
-                )
+    task_dir = os.path.join(get_tasks_dir(), task_id)
+    if not os.path.isdir(task_dir):
+        raise HTTPException(404, "Task not found")
 
-    raise HTTPException(404, "File not found or task expired")
+    if fmt == "lines":
+        file_path = os.path.join(task_dir, f"{task_id}.lines.json")
+        if not os.path.exists(file_path):
+            raise HTTPException(404, "lines.json not found")
+        return FileResponse(
+            file_path,
+            media_type="application/json",
+            filename=f"{task_id}.lines.json",
+        )
+
+    # srt or ass - find first matching file
+    pattern = os.path.join(task_dir, f"*.{fmt}")
+    matches = glob.glob(pattern)
+    if not matches:
+        raise HTTPException(404, f"No .{fmt} file found")
+    return FileResponse(
+        matches[0],
+        media_type="text/plain",
+        filename=f"subtitle.{fmt}",
+    )
 
 
-class KaraokeResponse(BaseModel):
-    """Response with karaoke subtitle data."""
-    task_id: str
-    lines: list
-    audio_path: Optional[str] = None
-
-
-@app.get("/karaoke/{task_id}", response_model=KaraokeResponse)
-async def get_karaoke(task_id: str):
-    """Get karaoke subtitle data for a completed task.
-
-    Returns subtitle lines with word-level timing for karaoke display.
-    """
-    # Search in output_dir (temp) and intermediate_dir (if configured)
-    search_dirs = [tempfile.gettempdir()]
-    intermediate_dir = get_intermediate_dir()
-    if intermediate_dir:
-        search_dirs.append(intermediate_dir)
-
-    for search_dir in search_dirs:
-        for entry in os.listdir(search_dir):
-            entry_path = os.path.join(search_dir, entry)
-
-            # Subdirectory: asr_{task_id}_*
-            if entry.startswith(f"asr_{task_id}_") and os.path.isdir(entry_path):
-                audio_path = None
-                lines_path = None
-                raw_path = None
-                for f in os.listdir(entry_path):
-                    if f.endswith(('.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac')):
-                        audio_path = os.path.join(entry_path, f)
-                    if f.endswith('.lines.json'):
-                        lines_path = os.path.join(entry_path, f)
-                    if f.endswith('.raw.json'):
-                        raw_path = os.path.join(entry_path, f)
-
-                if lines_path:
-                    with open(lines_path, "r", encoding="utf-8") as f:
-                        lines_data = json.load(f)
-                    return KaraokeResponse(task_id=task_id, lines=lines_data, audio_path=audio_path)
-                elif raw_path:
-                    with open(raw_path, "r", encoding="utf-8") as f:
-                        raw_data = json.load(f)
-                    return KaraokeResponse(
-                        task_id=task_id,
-                        lines=[{"text": raw_data.get("text", ""), "start_time": 0,
-                               "end_time": raw_data.get("duration", 0), "words": raw_data.get("words", [])}],
-                        audio_path=audio_path,
-                    )
-
-            # Flat file: {task_id}*.lines.json or {task_id}*.raw.json in intermediate_dir
-            if intermediate_dir and search_dir == intermediate_dir:
-                if entry.startswith(task_id) and entry.endswith('.lines.json'):
-                    with open(entry_path, "r", encoding="utf-8") as f:
-                        lines_data = json.load(f)
-                    # Try to find audio in temp output_dir
-                    audio_path = None
-                    temp_dir = tempfile.gettempdir()
-                    for d in os.listdir(temp_dir):
-                        if d.startswith(f"asr_{task_id}_") and os.path.isdir(os.path.join(temp_dir, d)):
-                            ad = os.path.join(temp_dir, d)
-                            for f in os.listdir(ad):
-                                if f.endswith(('.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac')):
-                                    audio_path = os.path.join(ad, f)
-                                    break
-                    return KaraokeResponse(task_id=task_id, lines=lines_data, audio_path=audio_path)
-                if entry.startswith(task_id) and entry.endswith('.raw.json'):
-                    with open(entry_path, "r", encoding="utf-8") as f:
-                        raw_data = json.load(f)
-                    audio_path = None
-                    temp_dir = tempfile.gettempdir()
-                    for d in os.listdir(temp_dir):
-                        if d.startswith(f"asr_{task_id}_") and os.path.isdir(os.path.join(temp_dir, d)):
-                            ad = os.path.join(temp_dir, d)
-                            for f in os.listdir(ad):
-                                if f.endswith(('.wav', '.mp3', '.flac', '.m4a', '.ogg', '.wma', '.aac')):
-                                    audio_path = os.path.join(ad, f)
-                                    break
-                    return KaraokeResponse(
-                        task_id=task_id,
-                        lines=[{"text": raw_data.get("text", ""), "start_time": 0,
-                               "end_time": raw_data.get("duration", 0), "words": raw_data.get("words", [])}],
-                        audio_path=audio_path,
-                    )
-
-    raise HTTPException(404, "No subtitle data found for task")

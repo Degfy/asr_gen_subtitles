@@ -55,9 +55,12 @@ def get_api_port() -> int:
     return int(os.environ.get("API_PORT", "8000"))
 
 
-def get_intermediate_dir() -> Optional[str]:
-    """Get intermediate products directory from config."""
-    return os.environ.get("ASR_INTERMEDIATE_DIR")
+def get_tasks_dir() -> str:
+    """Get tasks directory from config, default to ./tasks."""
+    path = os.environ.get("TASKS_DIR")
+    if path:
+        return path
+    return "tasks"
 
 
 # Load config at module import

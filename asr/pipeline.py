@@ -25,7 +25,7 @@ from asr.text_utils import (
 )
 from asr.model_path import is_model_cached, ensure_model
 from asr.platform import get_backend
-from asr.config import get_model_dir, get_model_size, get_intermediate_dir
+from asr.config import get_model_dir, get_model_size, get_tasks_dir
 
 
 # ── Stage 1: ASR + Forced Alignment ──────────────────────────────
@@ -647,7 +647,7 @@ def run_pipeline(
     max_chars: int = 14,
     resume_from: Optional[str] = None,
     align_text: Optional[str] = None,
-    intermediate_dir: Optional[str] = None,
+    task_dir: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> dict:
     """Run the full ASR subtitle generation pipeline."""
@@ -667,13 +667,10 @@ def run_pipeline(
     output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Intermediate products dir: param > config > output_dir
-    if intermediate_dir is None:
-        intermediate_dir = get_intermediate_dir()
-    if intermediate_dir is None:
-        intermediate_dir = output_dir
-    intermediate_dir = os.path.abspath(intermediate_dir)
-    os.makedirs(intermediate_dir, exist_ok=True)
+    # Tasks dir: single output directory for all task files
+    tasks_dir = os.path.abspath(get_tasks_dir())
+    task_dir = os.path.join(tasks_dir, task_id) if task_id else output_dir
+    os.makedirs(task_dir, exist_ok=True)
 
     all_stages = ["asr", "break", "fix", "render"]
     start_idx = 0
@@ -686,11 +683,11 @@ def run_pipeline(
     # Stage 1: ASR + Align
     if start_idx <= 0:
         if align_text:
-            result_dict = stage1_align(audio_path, intermediate_dir, align_text, language, task_id)
+            result_dict = stage1_align(audio_path, task_dir, align_text, language, task_id)
         else:
-            result_dict = stage1_asr(audio_path, intermediate_dir, language, model_size, task_id)
+            result_dict = stage1_asr(audio_path, task_dir, language, model_size, task_id)
     else:
-        raw_path = os.path.join(intermediate_dir, _raw_json_name(audio_path, task_id))
+        raw_path = os.path.join(task_dir, _raw_json_name(audio_path, task_id))
         print(f"[Stage 1] Skipping, loading: {raw_path}")
         with open(raw_path, "r", encoding="utf-8") as f:
             result_dict = json.load(f)
@@ -712,19 +709,19 @@ def run_pipeline(
 
     # Stage 2: Sentence Breaking
     if start_idx <= 1:
-        lines = stage2_break(result_dict, intermediate_dir, audio_path, max_chars, task_id)
+        lines = stage2_break(result_dict, task_dir, audio_path, max_chars, task_id)
     else:
-        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
+        lines_path = os.path.join(task_dir, _lines_json_name(audio_path, task_id))
         print(f"[Stage 2] Skipping, loading: {lines_path}")
         lines = _load_lines(lines_path)
 
     # Stage 3: CSV Fix
     if fix_dir and start_idx <= 2:
         lines = stage3_fix(lines, fix_dir)
-        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
+        lines_path = os.path.join(task_dir, _lines_json_name(audio_path, task_id))
         _save_lines(lines, lines_path)
     elif fix_dir and start_idx > 2:
-        lines_path = os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))
+        lines_path = os.path.join(task_dir, _lines_json_name(audio_path, task_id))
         print(f"[Stage 3] Skipping, loading: {lines_path}")
         lines = _load_lines(lines_path)
     else:
@@ -735,13 +732,14 @@ def run_pipeline(
     if errors:
         print(f"\n[BLOCKED] Fix {len(errors)} issue(s) before rendering.")
         print("Use 'xt asr-split' to split long lines, then re-run with --resume-from render")
-        return {"check_errors": errors, "lines_path": os.path.join(intermediate_dir, _lines_json_name(audio_path, task_id))}
+        return {"check_errors": errors, "lines_path": os.path.join(task_dir, _lines_json_name(audio_path, task_id))}
 
     # Pre-render: strip trailing punctuation from each line
     _strip_trailing_punct(lines)
 
     # Stage 4: Render
-    paths = stage4_render(lines, output_dir, audio_path, fmt, ass_style)
+    render_dir = task_dir if task_id else output_dir
+    paths = stage4_render(lines, render_dir, audio_path, fmt, ass_style)
     print(f"[Done] Pipeline complete.")
     return paths
 
